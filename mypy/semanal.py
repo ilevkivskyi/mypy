@@ -1137,6 +1137,56 @@ class SemanticAnalyzer(NodeVisitor):
         else:
             return None
 
+    def get_alias_type_vars(self, tp: Instance, alias: Context) -> List[Tuple[str, TypeVarExpr]]:
+        tvars = []  # type: List[Tuple[str, TypeVarExpr]]
+        print('ga', tp)
+        for arg in tp.args:
+            tvar = self.analyze_unbound_tvar(arg)
+            if tvar:
+                tvars.append(tvar)
+            elif isinstance(arg, Instance):
+                subvars = self.get_alias_type_vars(arg, alias)
+                if subvars:
+                    tvars.extend(subvars)
+            else:
+                self.fail('Invalid type argument for generic type alias', alias)
+        print(tvars)
+        return tvars
+
+    def make_generic_alias(self, tp: Instance, alname: str, alias: Context) -> Instance:
+        tvars = self.get_alias_type_vars(tp, alias)
+        type_vars = []  # type: List[TypeVarDef]
+        if tvars:
+            for j, (name, tvar_expr) in enumerate(tvars):
+                type_vars.append(TypeVarDef(name, j + 1, tvar_expr.values,
+                                            tvar_expr.upper_bound, tvar_expr.variance))
+
+        class_def = ClassDef(alname, Block([]))
+        class_def.fullname = self.qualified_name(alname)
+
+        info = TypeInfo(SymbolTable(), class_def, self.cur_mod_id)
+        info.mro = [info] + tp.type.mro
+        info.bases = [tp]
+        class_def.info = info
+        if type_vars:
+            class_def.type_vars = type_vars
+            info.type_vars = [tv.name for tv in type_vars]
+
+        self.bind_class_type_vars(class_def)
+        info.bases = [self.anal_type(tp)]
+        self.unbind_class_type_vars()
+
+        inst = Instance(info, type_vars, tp.line)
+        return inst
+
+    def make_generic_alias2(self, lname, rvalue: IndexExpr) -> None:
+        cdef = ClassDef(lname, Block([]))
+        cdef.fullname = self.qualified_name(lname)
+        cdef.base_type_exprs = [IndexExpr(NameExpr('Generic'), NameExpr('T')),
+                                IndexExpr(rvalue.base, rvalue.index)]
+        self.visit_class_def(cdef)
+        rvalue.analyzed = TypeAliasExpr(None)
+
     def visit_assignment_stmt(self, s: AssignmentStmt) -> None:
         for lval in s.lvalues:
             self.analyze_lvalue(lval, explicit_type=s.type is not None)

@@ -1379,6 +1379,12 @@ class ExpressionChecker:
         return self.apply_generic_arguments(tp, tapp.types, tapp)
 
     def visit_type_alias_expr(self, alias: TypeAliasExpr) -> Type:
+        if isinstance(alias.type, Instance):
+            tp = type_object_type(alias.type.type, self.named_type)
+            if isinstance(tp, CallableType):
+                return self.apply_generic_arguments(tp, alias.type.args, alias)
+            if isinstance(tp, Overloaded):
+                return self.apply_generic_arguments2(tp, alias.type.args, alias)
         return AnyType()
 
     def visit_list_expr(self, e: ListExpr) -> Type:

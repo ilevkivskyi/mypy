@@ -1,6 +1,6 @@
 """Semantic analysis of types"""
 
-from typing import Callable, cast, List
+from typing import Callable, cast, List, Tuple
 
 from mypy.types import (
     Type, UnboundType, TypeVarType, TupleType, UnionType, Instance,
@@ -8,9 +8,9 @@ from mypy.types import (
     StarType, PartialType, EllipsisType, UninhabitedType, TypeType
 )
 from mypy.nodes import (
-    BOUND_TVAR, TYPE_ALIAS, UNBOUND_IMPORTED,
+    BOUND_TVAR, UNBOUND_TVAR, TYPE_ALIAS, UNBOUND_IMPORTED,
     TypeInfo, Context, SymbolTableNode, Var, Expression,
-    IndexExpr, RefExpr
+    IndexExpr, RefExpr, TypeVarExpr, Block, ClassDef, SymbolTable
 )
 from mypy.sametypes import is_same_type
 from mypy.exprtotype import expr_to_unanalyzed_type, TypeTranslationError
@@ -61,8 +61,86 @@ def analyze_type_alias(node: Expression,
     except TypeTranslationError:
         fail_func('Invalid type alias', node)
         return None
-    analyzer = TypeAnalyser(lookup_func, lookup_fqn_func, fail_func)
-    return type.accept(analyzer)
+
+
+    def get_alias_type_vars(tvars):
+
+        all_params = set(tvars)
+        new_params = []
+        for t in tvars:
+            if t in all_params:
+                new_params.append(t)
+                all_params.remove(t)
+        tvars = new_params
+
+        type_vars = []  # type: List[TypeVarDef]
+        if tvars:
+            for j, (name, tvar_expr) in enumerate(tvars):
+                type_vars.append(TypeVarDef(name, j + 1, tvar_expr.values,
+                                            tvar_expr.upper_bound, tvar_expr.variance))
+
+        return type_vars
+
+
+    def get_type_vars(tp: UnboundType) -> List[Tuple[str, TypeVarExpr]]:
+        tvars = []  # type: List[Tuple[str, TypeVarExpr]]
+        for arg in tp.args:
+            tvar = analyze_unbound_tvar(arg)
+            if tvar:
+                tvars.append(tvar)
+            elif isinstance(arg, UnboundType):
+                subvars = get_type_vars(arg)
+                if subvars:
+                    tvars.extend(subvars)
+            else:
+                fail_func('Invalid type argument for generic type alias: %s' % arg, tp)
+
+        return tvars
+
+
+
+    def analyze_unbound_tvar(t: Type) -> Tuple[str, TypeVarExpr]:
+        if not isinstance(t, UnboundType):
+            return None
+        unbound = t
+        sym = lookup_func(unbound.name, unbound)
+        if sym is not None and sym.kind == UNBOUND_TVAR:
+            return unbound.name, cast(TypeVarExpr, sym.node)
+        return None
+
+
+    arr = get_alias_type_vars(get_type_vars(type))
+    print(type, arr)
+    an_alias = {t.name: t for t in arr}
+
+
+    analyzer = TypeAnalyser(lookup_func, lookup_fqn_func, fail_func, an_alias=an_alias)
+    result = type.accept(analyzer)
+
+    def named_type(name: str) -> Instance:
+        sym = lookup_func(name)
+        return Instance(cast(TypeInfo, sym.node), [])
+
+
+    if result:
+        class_def = ClassDef('Alias', Block([]))
+        class_def.fullname = 'Alias'
+
+        info = TypeInfo(SymbolTable(), class_def, 1)
+        info.bases = [result]
+        info.calculate_mro()
+
+        if arr:
+            class_def.type_vars = arr
+            info.type_vars = [tv.name for tv in arr]
+
+        inst = Instance(info, [AnyType()]*len(arr), type.line)
+
+
+        print(inst, inst.type)
+        return inst
+
+    return None
 
 
 class TypeAnalyser(TypeVisitor[Type]):
@@ -74,10 +152,12 @@ class TypeAnalyser(TypeVisitor[Type]):
     def __init__(self,
                  lookup_func: Callable[[str, Context], SymbolTableNode],
                  lookup_fqn_func: Callable[[str], SymbolTableNode],
-                 fail_func: Callable[[str, Context], None]) -> None:
+                 fail_func: Callable[[str, Context], None],
+                 an_alias: int = None) -> None:
         self.lookup = lookup_func
         self.lookup_fqn_func = lookup_fqn_func
         self.fail = fail_func
+        self.an_alias = an_alias
 
     def visit_unbound_type(self, t: UnboundType) -> Type:
         if t.optional:
@@ -99,6 +179,8 @@ class TypeAnalyser(TypeVisitor[Type]):
                         t.name), t)
                 assert sym.tvar_def is not None
                 return TypeVarType(sym.tvar_def, t.line)
+            elif sym.kind == UNBOUND_TVAR and self.an_alias:
+                return TypeVarType(self.an_alias[t.name], t.line)
             elif fullname == 'builtins.None':
                 if experiments.STRICT_OPTIONAL:
                     return NoneTyp(is_ret_type=t.is_ret_type)
