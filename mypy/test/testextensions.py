@@ -73,6 +73,12 @@ class TypedDictTests(BaseTestCase):
         self.assertEqual(Emp.__bases__, (dict,))
         self.assertEqual(Emp.__annotations__, {'name': str, 'id': int})
 
+    def test_typeddict_typing(self):
+        Emp = TypedDict('Emp', name=str, id=int)
+        self.assertEqual(typing.Optional[Emp], typing.Union[None, Emp])
+        self.assertEqual(typing.ClassVar[Emp], typing.ClassVar[Emp])
+        self.assertNotEqual(typing.List[Emp], typing.Tuple[Emp, ...])
+
     def test_typeddict_errors(self):
         Emp = TypedDict('Emp', {'name': str, 'id': int})
         self.assertEqual(TypedDict.__module__, 'mypy_extensions')
