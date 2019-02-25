@@ -1007,7 +1007,7 @@ d: D
 reveal_type(d['x']) # E: Revealed type is 'builtins.int'
 reveal_type(d['y']) # E: Revealed type is 'builtins.str'
 reveal_type(d.get('x')) # E: Revealed type is 'builtins.int'
-reveal_type(d.get('y')) # E: Revealed type is 'builtins.str'
+reveal_type(d.get('y')) # E: Revealed type is 'builtins.str'.
 [builtins fixtures/dict.pyi]
 [typing fixtures/typing-full.pyi]
 
@@ -1571,3 +1571,24 @@ alias = b.__delitem__
 alias('x') # E: Argument 1 has incompatible type "str"; expected "NoReturn"
 alias(s) # E: Argument 1 has incompatible type "str"; expected "NoReturn"
 [builtins fixtures/dict.pyi]
+
+[case testPluginUnionsOfTypedDicts]
+from typing import Union
+from mypy_extensions import TypedDict
+
+class TDA(TypedDict):
+    a: int
+    b: str
+
+class TDB(TypedDict):
+    a: int
+    b: int
+    c: int
+
+td: Union[TDA, TDB]
+
+reveal_type(td.get('a'))
+reveal_type(td.get('b'))
+reveal_type(td.get('c'))
+[builtins fixtures/dict.pyi]
+[typing fixtures/typing-full.pyi]

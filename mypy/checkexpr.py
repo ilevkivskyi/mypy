@@ -295,26 +295,9 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 isinstance(callee_type, CallableType)
                 and callee_type.implicit):
             return self.msg.untyped_function_call(callee_type, e)
-        # Figure out the full name of the callee for plugin lookup.
-        object_type = None
-        if not isinstance(e.callee, RefExpr):
-            fullname = None
-        else:
-            fullname = e.callee.fullname
-            if (isinstance(e.callee.node, TypeAlias) and
-                    isinstance(e.callee.node.target, Instance)):
-                fullname = e.callee.node.target.type.fullname()
-            if (fullname is None
-                    and isinstance(e.callee, MemberExpr)
-                    and e.callee.expr in self.chk.type_map
-                    and isinstance(callee_type, FunctionLike)):
-                # For method calls we include the defining class for the method
-                # in the full name (example: 'typing.Mapping.get').
-                callee_expr_type = self.chk.type_map[e.callee.expr]
-                fullname = self.method_fullname(callee_expr_type, e.callee.name)
-                if fullname is not None:
-                    object_type = callee_expr_type
-        ret_type = self.check_call_expr_with_callee_type(callee_type, e, fullname, object_type)
+
+        ret_type = self.type_check_call(e, callee_type)
+
         if isinstance(e.callee, RefExpr) and len(e.args) == 2:
             if e.callee.fullname in ('builtins.isinstance', 'builtins.issubclass'):
                 self.check_runtime_protocol_test(e)
@@ -330,6 +313,27 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             self.chk.msg.does_not_return_value(callee_type, e)
             return AnyType(TypeOfAny.from_error)
         return ret_type
+
+    def type_check_call(self, e: CallExpr, callee_type: Type) -> Type:
+        if isinstance(e.callee, RefExpr):
+            fullname = e.callee.fullname
+            if (isinstance(e.callee.node, TypeAlias) and
+                    isinstance(e.callee.node.target, Instance)):
+                fullname = e.callee.node.target.type.fullname()
+            if fullname is not None:
+                # Call of named function or class (function plugin).
+                return self.check_call_expr_with_callee_type(callee_type, e, fullname)
+            if isinstance(e.callee, MemberExpr) and e.callee.expr in self.chk.type_map:
+                # For method calls we include the defining class for the method
+                # in the full name (example: 'typing.Mapping.get').
+                callee_expr_type = self.chk.type_map[e.callee.expr]
+                return self.check_method_call_by_name(e.callee.name, callee_expr_type,
+                                                      e.args, e.arg_kinds, e,
+                                                      is_operator=False,
+                                                      arg_names=e.arg_names,
+                                                      callable_node=e.callee)[0]
+        # Generic call (no plugins)
+        return self.check_call_expr_with_callee_type(callee_type, e, None)
 
     def method_fullname(self, object_type: Type, method_name: str) -> Optional[str]:
         """Convert a method name to a fully qualified name, based on the type of the object that
@@ -644,21 +648,16 @@ class ExpressionChecker(ExpressionVisitor[Type]):
     def check_call_expr_with_callee_type(self,
                                          callee_type: Type,
                                          e: CallExpr,
-                                         callable_name: Optional[str],
-                                         object_type: Optional[Type]) -> Type:
+                                         callable_name: Optional[str]) -> Type:
         """Type check call expression.
 
         The given callee type overrides the type of the callee
         expression.
         """
-        # Try to refine the call signature using plugin hooks before checking the call.
-        callee_type = self.transform_callee_type(
-            callable_name, callee_type, e.args, e.arg_kinds, e, e.arg_names, object_type)
 
         return self.check_call(callee_type, e.args, e.arg_kinds, e,
                                e.arg_names, callable_node=e.callee,
-                               callable_name=callable_name,
-                               object_type=object_type)[0]
+                               callable_name=callable_name)[0]
 
     def check_call(self,
                    callee: Type,
@@ -2012,17 +2011,34 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                                   arg_kinds: List[int],
                                   context: Context,
                                   local_errors: Optional[MessageBuilder] = None,
+                                  arg_names: Optional[Sequence[Optional[str]]] = None,
+                                  is_operator: bool = True,
+                                  callable_node: Optional[Expression] = None,
+                                  original_type: Optional[Type] = None
                                   ) -> Tuple[Type, Type]:
         """Type check a call to a named method on an object.
 
         Return tuple (result type, inferred method type).
         """
+        if isinstance(base_type, UnionType):
+            res = [self.check_method_call_by_name(method, typ, args, arg_kinds, context,
+                                                  local_errors=local_errors,
+                                                  arg_names=arg_names,
+                                                  is_operator=is_operator,
+                                                  callable_node=callable_node,
+                                                  original_type=original_type)
+                   for typ in base_type.items]
+            ret_type = UnionType.make_simplified_union([r[0] for r in res])
+            method_inf = UnionType.make_simplified_union([r[1] for r in res])
+            return ret_type, method_inf
         local_errors = local_errors or self.msg
-        method_type = analyze_member_access(method, base_type, context, False, False, True,
-                                            local_errors, original_type=base_type, chk=self.chk,
+        original_type = original_type or base_type
+        method_type = analyze_member_access(method, base_type, context, False, False, is_operator,
+                                            local_errors, original_type=original_type, chk=self.chk,
                                             in_literal_context=self.is_literal_context())
         return self.check_method_call(
-            method, base_type, method_type, args, arg_kinds, context, local_errors)
+            method, base_type, method_type, args, arg_kinds, context, local_errors,
+            arg_names=arg_names, callable_node=callable_node)
 
     def check_method_call(self,
                           method_name: str,
@@ -2031,7 +2047,10 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                           args: List[Expression],
                           arg_kinds: List[int],
                           context: Context,
-                          local_errors: Optional[MessageBuilder] = None) -> Tuple[Type, Type]:
+                          local_errors: Optional[MessageBuilder] = None,
+                          arg_names: Optional[Sequence[Optional[str]]] = None,
+                          callable_node: Optional[Expression] = None
+                          ) -> Tuple[Type, Type]:
         """Type check a call to a method with the given name and type on an object.
 
         Return tuple (result type, inferred method type).
@@ -2044,8 +2063,9 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             callable_name, method_type, args, arg_kinds, context, object_type=object_type)
 
         return self.check_call(method_type, args, arg_kinds,
-                               context, arg_messages=local_errors,
-                               callable_name=callable_name, object_type=object_type)
+                               context, arg_names=arg_names, arg_messages=local_errors,
+                               callable_name=callable_name, object_type=object_type,
+                               callable_node=callable_node)
 
     def check_op_reversible(self,
                             op_name: str,
