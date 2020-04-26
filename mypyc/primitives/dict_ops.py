@@ -145,7 +145,7 @@ method_op(
     arg_types=[dict_rprimitive],
     result_type=list_rprimitive,
     error_kind=ERR_MAGIC,
-    emit=call_emit('PyDict_Keys')
+    emit=simple_emit('{dest} = _PyDictView_New({args[0]}, &PyDictKeys_Type);')
 )
 
 method_op(
@@ -153,7 +153,7 @@ method_op(
     arg_types=[dict_rprimitive],
     result_type=list_rprimitive,
     error_kind=ERR_MAGIC,
-    emit=call_emit('PyDict_Values')
+    emit=simple_emit('{dest} = _PyDictView_New({args[0]}, &PyDictValues_Type);')
 )
 
 method_op(
@@ -161,7 +161,7 @@ method_op(
     arg_types=[dict_rprimitive],
     result_type=list_rprimitive,
     error_kind=ERR_MAGIC,
-    emit=call_emit('PyDict_Items')
+    emit=simple_emit('{dest} = _PyDictView_New({args[0]}, &PyDictItems_Type);')
 )
 
 # PyDict_Next() fast iteration
