@@ -143,7 +143,7 @@ func_op(name='builtins.len',
 method_op(
     name='keys',
     arg_types=[dict_rprimitive],
-    result_type=list_rprimitive,
+    result_type=object_rprimitive,
     error_kind=ERR_MAGIC,
     emit=simple_emit('{dest} = _PyDictView_New({args[0]}, &PyDictKeys_Type);')
 )
@@ -151,7 +151,7 @@ method_op(
 method_op(
     name='values',
     arg_types=[dict_rprimitive],
-    result_type=list_rprimitive,
+    result_type=object_rprimitive,
     error_kind=ERR_MAGIC,
     emit=simple_emit('{dest} = _PyDictView_New({args[0]}, &PyDictValues_Type);')
 )
@@ -159,7 +159,7 @@ method_op(
 method_op(
     name='items',
     arg_types=[dict_rprimitive],
-    result_type=list_rprimitive,
+    result_type=object_rprimitive,
     error_kind=ERR_MAGIC,
     emit=simple_emit('{dest} = _PyDictView_New({args[0]}, &PyDictItems_Type);')
 )
