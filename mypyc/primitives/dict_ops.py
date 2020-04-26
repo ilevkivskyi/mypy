@@ -5,7 +5,7 @@ from typing import List
 from mypyc.ir.ops import EmitterInterface, ERR_FALSE, ERR_MAGIC, ERR_NEVER
 from mypyc.ir.rtypes import (
     dict_rprimitive, object_rprimitive, bool_rprimitive, int_rprimitive,
-    dict_next_rtuple_single, dict_next_rtuple_pair
+    dict_next_rtuple_single, dict_next_rtuple_pair, list_rprimitive
 )
 
 from mypyc.primitives.registry import (
@@ -139,6 +139,30 @@ func_op(name='builtins.len',
         result_type=int_rprimitive,
         error_kind=ERR_NEVER,
         emit=emit_len)
+
+method_op(
+    name='keys',
+    arg_types=[dict_rprimitive],
+    result_type=list_rprimitive,
+    error_kind=ERR_MAGIC,
+    emit=call_emit('PyDict_Keys')
+)
+
+method_op(
+    name='values',
+    arg_types=[dict_rprimitive],
+    result_type=list_rprimitive,
+    error_kind=ERR_MAGIC,
+    emit=call_emit('PyDict_Values')
+)
+
+method_op(
+    name='items',
+    arg_types=[dict_rprimitive],
+    result_type=list_rprimitive,
+    error_kind=ERR_MAGIC,
+    emit=call_emit('PyDict_Items')
+)
 
 # PyDict_Next() fast iteration
 dict_next_key_op = custom_op(
