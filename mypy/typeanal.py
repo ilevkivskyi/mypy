@@ -985,9 +985,13 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
             self.api.defer()  # Still incomplete
             return t
         else:
-            # TODO: Handle non-TypeInfo
-            assert isinstance(n.node, TypeInfo)
-            return self.analyze_type_with_type_info(n.node, t.args, t)
+            if isinstance(n.node, TypeInfo):
+                return self.analyze_type_with_type_info(n.node, t.args, t)
+            # TODO: Handle other kinds
+            assert isinstance(n.node, TypeAlias)
+            return expand_type_alias(
+                n.node, t.args, self.fail, n.node.no_args, t, unexpanded_type=t, disallow_any=False
+            )
 
     def analyze_callable_args_for_paramspec(
         self, callable_args: Type, ret_type: Type, fallback: Instance

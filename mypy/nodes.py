@@ -3716,6 +3716,7 @@ def local_definitions(
             shortname = name.split("-redef")[0]
         fullname = name_prefix + "." + shortname
         node = symnode.node
+        fullname = fullname.replace("-fallback", "")
         if node and node.fullname == fullname:
             yield fullname, symnode, info
             if isinstance(node, TypeInfo):

@@ -428,18 +428,48 @@ reveal_type(x)  # N: Revealed type is "Type[Any]"
 [builtins fixtures/isinstancelist.pyi]
 
 [case testBasicNamedTuple]
-# flags: --enable-recursive-aliases --strict-optional
-from typing import NamedTuple, Optional, Union
+# flags: --enable-recursive-aliases
+from typing import NamedTuple, Optional
 
-NT = NamedTuple("NT", [("x", Union[None, NT]), ("y", int)])
+NT = NamedTuple("NT", [("x", Optional[NT]), ("y", int)])
 nt: NT
-reveal_type(nt)
-reveal_type(nt.x)
-reveal_type(nt[0])
+reveal_type(nt)  # N: Revealed type is "Tuple[Union[..., None], builtins.int, fallback=__main__.NT]"
+reveal_type(nt.x)  # N: Revealed type is "Union[Tuple[Union[..., None], builtins.int, fallback=__main__.NT], None]"
+reveal_type(nt[0])  # N: Revealed type is "Union[Tuple[Union[..., None], builtins.int, fallback=__main__.NT], None]"
 y: str
-y = nt
-y = nt.x
-y = nt[0]
 if nt.x is not None:
-    y = nt.x[0]
+    y = nt.x[0]  # E: Incompatible types in assignment (expression has type "Optional[NT]", variable has type "str")
 [builtins fixtures/tuple.pyi]
+
+[case testBasicNamedTupleSpecial]
+# flags: --enable-recursive-aliases
+from typing import NamedTuple
+
+NT = NamedTuple("NT", [("x", NT), ("y", int)])
+nt: NT
+reveal_type(nt)  # N: Revealed type is "Tuple[..., builtins.int, fallback=__main__.NT]"
+reveal_type(nt.x)  # N: Revealed type is "Tuple[Tuple[..., builtins.int, fallback=__main__.NT], builtins.int, fallback=__main__.NT]"
+reveal_type(nt[0])  # N: Revealed type is "Tuple[Tuple[..., builtins.int, fallback=__main__.NT], builtins.int, fallback=__main__.NT]"
+y: str
+if nt.x is not None:
+    y = nt.x[0]  # E: Incompatible types in assignment (expression has type "NT", variable has type "str")
+# XXX check join no infinite recursion on fallbacks
+[builtins fixtures/tuple.pyi]
+
+[case testBasicNamedTupleClass]
+# flags: --enable-recursive-aliases
+from typing import NamedTuple, Optional
+
+class NT(NamedTuple):
+    x: Optional[NT]
+    y: int
+
+nt: NT
+reveal_type(nt)  # N: Revealed type is "Tuple[Union[..., None], builtins.int, fallback=__main__.NT]"
+reveal_type(nt.x)  # N: Revealed type is "Union[Tuple[Union[..., None], builtins.int, fallback=__main__.NT], None]"
+reveal_type(nt[0])  # N: Revealed type is "Union[Tuple[Union[..., None], builtins.int, fallback=__main__.NT], None]"
+y: str
+if nt.x is not None:
+    y = nt.x[0]  # E: Incompatible types in assignment (expression has type "Optional[NT]", variable has type "str")
+[builtins fixtures/tuple.pyi]
+

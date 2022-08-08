@@ -197,7 +197,7 @@ class NamedTupleAnalyzer:
 
     def check_namedtuple(
         self, node: Expression, var_name: Optional[str], is_func_scope: bool
-    ) -> Tuple[Optional[str], Optional[Union[TypeInfo, TypeAlias]]]:
+    ) -> Tuple[Optional[str], Optional[TypeInfo]]:
         """Check if a call defines a namedtuple.
 
         The optional var_name argument is the name of the variable to
@@ -273,27 +273,19 @@ class NamedTupleAnalyzer:
             default_items = {}
         info = self.build_namedtuple_typeinfo(name, items, types, default_items, node.line)
 
-        # We can't calculate the complete fallback type until after semantic
-        # analysis, since otherwise base classes might be incomplete. Postpone a
-        # callback function that patches the fallback.
-        if not has_placeholder(info.tuple_type):
-            self.api.schedule_patch(
-                PRIORITY_FALLBACKS, lambda: calculate_tuple_fallback(info.tuple_type)
-            )
-
         # If var_name is not None (i.e. this is not a base class expression), we always
         # store the generated TypeInfo under var_name in the current scope, so that
         # other definitions can use it.
+        if self.options.enable_recursive_aliases:
+            alias = TypeAlias(
+                info.tuple_type.copy_modified(fallback=Instance(info, [])),
+                info.fullname,
+                info.line,
+                info.column,
+            )
+        else:
+            alias = None
         if var_name:
-            if self.options.enable_recursive_aliases:
-                alias = TypeAlias(
-                    info.tuple_type.copy_modified(fallback=Instance(info, [])),
-                    info.fullname,
-                    info.line,
-                    info.column,
-                )
-            else:
-                alias = None
             self.store_namedtuple_info(info, var_name, call, is_typed, alias)
         # There are three cases where we need to store the generated TypeInfo
         # second time (for the purpose of serialization):
@@ -309,6 +301,15 @@ class NamedTupleAnalyzer:
         #     since it is in MRO of some class).
         if name != var_name or is_func_scope:
             # NOTE: we skip local namespaces since they are not serialized.
+            if self.options.enable_recursive_aliases and not is_func_scope:
+                existing = self.api.current_symbol_table().get(name)
+                if existing and isinstance(existing.node, TypeAlias):
+                    if has_placeholder(existing.node.target):
+                        existing.node.target = node.target
+                        self.api.progress = True
+                        self.api.defer()
+                else:
+                    self.api.add_symbol_skip_local(name, alias)
             self.api.add_symbol_skip_local(name, info)
         return typename, info
 
@@ -320,6 +321,7 @@ class NamedTupleAnalyzer:
         is_typed: bool,
         node: Optional[TypeAlias] = None,
     ) -> None:
+        call.analyzed = NamedTupleExpr(info, is_typed=is_typed)
         if self.options.enable_recursive_aliases:
             existing = self.api.current_symbol_table().get(name)
             if existing and isinstance(existing.node, TypeAlias):
@@ -329,7 +331,6 @@ class NamedTupleAnalyzer:
                     self.api.defer()
                 return
         self.api.add_symbol(name, node or info, call)
-        call.analyzed = NamedTupleExpr(info, is_typed=is_typed)
         call.analyzed.set_line(call)
 
     def parse_namedtuple_args(
@@ -499,6 +500,14 @@ class NamedTupleAnalyzer:
         info.line = line
         # For use by mypyc.
         info.metadata["namedtuple"] = {"fields": items.copy()}
+
+        # We can't calculate the complete fallback type until after semantic
+        # analysis, since otherwise base classes might be incomplete. Postpone a
+        # callback function that patches the fallback.
+        if not has_placeholder(info.tuple_type):
+            self.api.schedule_patch(
+                PRIORITY_FALLBACKS, lambda: calculate_tuple_fallback(info.tuple_type)
+            )
 
         def add_field(
             var: Var, is_initialized_in_class: bool = False, is_property: bool = False

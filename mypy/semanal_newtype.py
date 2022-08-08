@@ -122,6 +122,8 @@ class NewTypeAnalyzer:
             call.analyzed.info = newtype_class_info
         else:
             call.analyzed.info.bases = newtype_class_info.bases
+            # XXX I think we need this, but it works without it.
+            call.analyzed.info.mro = newtype_class_info.mro
         self.api.add_symbol(var_name, call.analyzed.info, s)
         if self.api.is_func_scope():
             self.api.add_symbol_skip_local(name, call.analyzed.info)
