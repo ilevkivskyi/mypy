@@ -222,6 +222,7 @@ from mypy.semanal_shared import (
     PRIORITY_FALLBACKS,
     SemanticAnalyzerInterface,
     calculate_tuple_fallback,
+    has_placeholder,
     set_callable_name as set_callable_name,
 )
 from mypy.semanal_typeddict import TypedDictAnalyzer
@@ -2629,7 +2630,8 @@ class SemanticAnalyzer(
     def analyze_namedtuple_assign(self, s: AssignmentStmt) -> bool:
         """Check if s defines a namedtuple."""
         if isinstance(s.rvalue, CallExpr) and isinstance(s.rvalue.analyzed, NamedTupleExpr):
-            return True  # This is a valid and analyzed named tuple definition, nothing to do here.
+            if not self.options.enable_recursive_aliases:
+                return True  # This is a valid and analyzed named tuple definition, nothing to do here.
         if len(s.lvalues) != 1 or not isinstance(s.lvalues[0], (NameExpr, MemberExpr)):
             return False
         lvalue = s.lvalues[0]
@@ -3026,6 +3028,9 @@ class SemanticAnalyzer(
         if not pep_613 and s.unanalyzed_type is not None:
             # Second rule: Explicit type (cls: Type[A] = A) always creates variable, not alias.
             # unless using PEP 613 `cls: TypeAlias = A`
+            return False
+
+        if isinstance(s.rvalue, CallExpr) and s.rvalue.analyzed:
             return False
 
         existing = self.current_symbol_table().get(lvalue.name)
@@ -5983,19 +5988,6 @@ class SemanticAnalyzer(
 
     def is_future_flag_set(self, flag: str) -> bool:
         return self.modules[self.cur_mod_id].is_future_flag_set(flag)
-
-
-class HasPlaceholders(TypeQuery[bool]):
-    def __init__(self) -> None:
-        super().__init__(any)
-
-    def visit_placeholder_type(self, t: PlaceholderType) -> bool:
-        return True
-
-
-def has_placeholder(typ: Type) -> bool:
-    """Check if a type contains any placeholder types (recursively)."""
-    return typ.accept(HasPlaceholders())
 
 
 def replace_implicit_first_type(sig: FunctionLike, new: Type) -> FunctionLike:

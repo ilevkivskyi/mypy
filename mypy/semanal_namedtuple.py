@@ -4,7 +4,7 @@ This is conceptually part of mypy.semanal.
 """
 
 from contextlib import contextmanager
-from typing import Dict, Iterator, List, Mapping, Optional, Tuple, cast
+from typing import Dict, Iterator, List, Mapping, Optional, Tuple, Union, cast
 
 from typing_extensions import Final
 
@@ -36,6 +36,7 @@ from mypy.nodes import (
     SymbolTableNode,
     TempNode,
     TupleExpr,
+    TypeAlias,
     TypeInfo,
     TypeVarExpr,
     Var,
@@ -45,12 +46,14 @@ from mypy.semanal_shared import (
     PRIORITY_FALLBACKS,
     SemanticAnalyzerInterface,
     calculate_tuple_fallback,
+    has_placeholder,
     set_callable_name,
 )
 from mypy.types import (
     TYPED_NAMEDTUPLE_NAMES,
     AnyType,
     CallableType,
+    Instance,
     LiteralType,
     TupleType,
     Type,
@@ -165,7 +168,11 @@ class NamedTupleAnalyzer:
                 if stmt.type is None:
                     types.append(AnyType(TypeOfAny.unannotated))
                 else:
-                    analyzed = self.api.anal_type(stmt.type)
+                    analyzed = self.api.anal_type(
+                        stmt.type,
+                        allow_placeholder=self.options.enable_recursive_aliases
+                        and not self.api.is_func_scope(),
+                    )
                     if analyzed is None:
                         # Something is incomplete. We need to defer this named tuple.
                         return None
@@ -190,7 +197,7 @@ class NamedTupleAnalyzer:
 
     def check_namedtuple(
         self, node: Expression, var_name: Optional[str], is_func_scope: bool
-    ) -> Tuple[Optional[str], Optional[TypeInfo]]:
+    ) -> Tuple[Optional[str], Optional[Union[TypeInfo, TypeAlias]]]:
         """Check if a call defines a namedtuple.
 
         The optional var_name argument is the name of the variable to
@@ -265,11 +272,29 @@ class NamedTupleAnalyzer:
         else:
             default_items = {}
         info = self.build_namedtuple_typeinfo(name, items, types, default_items, node.line)
+
+        # We can't calculate the complete fallback type until after semantic
+        # analysis, since otherwise base classes might be incomplete. Postpone a
+        # callback function that patches the fallback.
+        if not has_placeholder(info.tuple_type):
+            self.api.schedule_patch(
+                PRIORITY_FALLBACKS, lambda: calculate_tuple_fallback(info.tuple_type)
+            )
+
         # If var_name is not None (i.e. this is not a base class expression), we always
         # store the generated TypeInfo under var_name in the current scope, so that
         # other definitions can use it.
         if var_name:
-            self.store_namedtuple_info(info, var_name, call, is_typed)
+            if self.options.enable_recursive_aliases:
+                alias = TypeAlias(
+                    info.tuple_type.copy_modified(fallback=Instance(info, [])),
+                    info.fullname,
+                    info.line,
+                    info.column,
+                )
+            else:
+                alias = None
+            self.store_namedtuple_info(info, var_name, call, is_typed, alias)
         # There are three cases where we need to store the generated TypeInfo
         # second time (for the purpose of serialization):
         #   * If there is a name mismatch like One = NamedTuple('Other', [...])
@@ -288,9 +313,22 @@ class NamedTupleAnalyzer:
         return typename, info
 
     def store_namedtuple_info(
-        self, info: TypeInfo, name: str, call: CallExpr, is_typed: bool
+        self,
+        info: TypeInfo,
+        name: str,
+        call: CallExpr,
+        is_typed: bool,
+        node: Optional[TypeAlias] = None,
     ) -> None:
-        self.api.add_symbol(name, info, call)
+        if self.options.enable_recursive_aliases:
+            existing = self.api.current_symbol_table().get(name)
+            if existing and isinstance(existing.node, TypeAlias):
+                if has_placeholder(existing.node.target):
+                    existing.node.target = node.target
+                    self.api.progress = True
+                    self.api.defer()
+                return
+        self.api.add_symbol(name, node or info, call)
         call.analyzed = NamedTupleExpr(info, is_typed=is_typed)
         call.analyzed.set_line(call)
 
@@ -410,7 +448,11 @@ class NamedTupleAnalyzer:
                 except TypeTranslationError:
                     self.fail("Invalid field type", type_node)
                     return None
-                analyzed = self.api.anal_type(type)
+                analyzed = self.api.anal_type(
+                    type,
+                    allow_placeholder=self.options.enable_recursive_aliases
+                    and not self.api.is_func_scope(),
+                )
                 # Workaround #4987 and avoid introducing a bogus UnboundType
                 if isinstance(analyzed, UnboundType):
                     analyzed = AnyType(TypeOfAny.from_error)
@@ -457,11 +499,6 @@ class NamedTupleAnalyzer:
         info.line = line
         # For use by mypyc.
         info.metadata["namedtuple"] = {"fields": items.copy()}
-
-        # We can't calculate the complete fallback type until after semantic
-        # analysis, since otherwise base classes might be incomplete. Postpone a
-        # callback function that patches the fallback.
-        self.api.schedule_patch(PRIORITY_FALLBACKS, lambda: calculate_tuple_fallback(tuple_base))
 
         def add_field(
             var: Var, is_initialized_in_class: bool = False, is_property: bool = False

@@ -426,3 +426,20 @@ U = Type[Union[int, U]]  # E: Type[...] cannot contain another Type[...]
 x: U
 reveal_type(x)  # N: Revealed type is "Type[Any]"
 [builtins fixtures/isinstancelist.pyi]
+
+[case testBasicNamedTuple]
+# flags: --enable-recursive-aliases --strict-optional
+from typing import NamedTuple, Optional, Union
+
+NT = NamedTuple("NT", [("x", Union[None, NT]), ("y", int)])
+nt: NT
+reveal_type(nt)
+reveal_type(nt.x)
+reveal_type(nt[0])
+y: str
+y = nt
+y = nt.x
+y = nt[0]
+if nt.x is not None:
+    y = nt.x[0]
+[builtins fixtures/tuple.pyi]
