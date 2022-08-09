@@ -2465,16 +2465,18 @@ class TypeAliasExpr(Expression):
 class NamedTupleExpr(Expression):
     """Named tuple expression namedtuple(...) or NamedTuple(...)."""
 
-    __slots__ = ("info", "is_typed")
+    __slots__ = ("info", "alias", "is_typed")
 
     # The class representation of this named tuple (its tuple_type attribute contains
     # the tuple item types)
     info: "TypeInfo"
+    alias: "TypeAlias"
     is_typed: bool  # whether this class was created with typing(_extensions).NamedTuple
 
-    def __init__(self, info: "TypeInfo", is_typed: bool = False) -> None:
+    def __init__(self, info: "TypeInfo", alias: "TypeAlias", is_typed: bool = False) -> None:
         super().__init__()
         self.info = info
+        self.alias = alias
         self.is_typed = is_typed
 
     def accept(self, visitor: ExpressionVisitor[T]) -> T:
@@ -3017,7 +3019,7 @@ class TypeInfo(SymbolNode):
             "type_vars": self.type_vars,
             "has_param_spec_type": self.has_param_spec_type,
             "bases": [b.serialize() for b in self.bases],
-            "mro": [c.fullname for c in self.mro],
+            "mro": [c.fullname + ("-fallback" if c.is_named_tuple else "") for c in self.mro],
             "_promote": [p.serialize() for p in self._promote],
             "declared_metaclass": (
                 None if self.declared_metaclass is None else self.declared_metaclass.serialize()
@@ -3516,6 +3518,8 @@ class SymbolTableNode:
             assert self.node is not None, f"{prefix}:{name}"
             if prefix is not None:
                 fullname = self.node.fullname
+                if isinstance(self.node, TypeInfo) and self.node.is_named_tuple:
+                    fullname += "-fallback"
                 if (
                     fullname is not None
                     and "." in fullname

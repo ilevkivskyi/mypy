@@ -1429,11 +1429,8 @@ class SemanticAnalyzer(
         if (
             defn.info
             and defn.info.is_named_tuple
-            and (
-                not self.options.enable_recursive_aliases
-                or defn.info.tuple_type
-                and not has_placeholder(defn.info.tuple_type)
-            )
+            and defn.info.tuple_type
+            and not has_placeholder(defn.info.tuple_type)
         ):
             # Don't reprocess everything. We just need to process methods defined
             # in the named tuple class body.
@@ -1446,27 +1443,25 @@ class SemanticAnalyzer(
             if info is None:
                 self.mark_incomplete(defn.name, defn)
             else:
-                if self.options.enable_recursive_aliases:
-                    alias = TypeAlias(
-                        info.tuple_type.copy_modified(fallback=Instance(info, [])),
-                        info.fullname,
-                        info.line,
-                        info.column,
-                    )
-                    existing = self.current_symbol_table().get(defn.name)
-                    # XXX: check actual bad override
-                    if existing and isinstance(existing.node, TypeAlias):
-                        if has_placeholder(existing.node.target):
-                            existing.node.target = alias.target
-                            self.progress = True
-                            self.defer()
-                    else:
-                        self.add_symbol(defn.name, alias, defn)
-                    if not has_placeholder(info.tuple_type):
-                        if defn.name + "-fallback" not in self.current_symbol_table():
-                            self.add_symbol(defn.name + "-fallback", info, defn)
+                alias = TypeAlias(
+                    info.tuple_type.copy_modified(fallback=Instance(info, [])),
+                    info.fullname,
+                    info.line,
+                    info.column,
+                )
+                if defn.analyzed is None:
+                    defn.analyzed = NamedTupleExpr(info, alias, is_typed=True)
+                    defn.analyzed.line = defn.line
+                    defn.analyzed.column = defn.column
+                    existing = None
+                else:
+                    existing = defn.analyzed.alias
+                if existing is not None and has_placeholder(existing.target):
+                    existing.target = alias.target
+                    self.progress = True
+                    self.defer()
 
-                self.prepare_class_def(defn, info, skip_add=self.options.enable_recursive_aliases)
+                self.prepare_class_def(defn, info, alias, skip_add=existing is not None)
                 with self.scope.class_scope(info):
                     with self.named_tuple_analyzer.save_namedtuple_body(info):
                         self.analyze_class_body_common(defn)
@@ -1692,14 +1687,18 @@ class SemanticAnalyzer(
         return remove_dups(tvars)
 
     def prepare_class_def(
-        self, defn: ClassDef, info: Optional[TypeInfo] = None, skip_add: bool = False
+        self,
+        defn: ClassDef,
+        info: Optional[TypeInfo] = None,
+        node: Optional[TypeAlias] = None,
+        skip_add: bool = False,
     ) -> None:
         """Prepare for the analysis of a class definition.
 
         Create an empty TypeInfo and store it in a symbol table, or if the 'info'
         argument is provided, store it instead (used for magic type definitions).
         """
-        if not defn.info or skip_add:
+        if not defn.info:
             defn.fullname = self.qualified_name(defn.name)
             # TODO: Nested classes
             info = info or self.make_empty_type_info(defn)
@@ -1712,8 +1711,12 @@ class SemanticAnalyzer(
         local_name = defn.name
         if "@" in local_name:
             local_name = local_name.split("@")[0]
-        if not skip_add:
-            self.add_symbol(local_name, defn.info, defn)
+        if skip_add:
+            return
+        node_to_add = node or defn.info
+        self.add_symbol(local_name, node_to_add, defn)
+        if node:
+            self.add_symbol(local_name + "-fallback", defn.info, defn)
         if self.is_nested_within_func_scope():
             # We need to preserve local classes, let's store them
             # in globals under mangled unique names
@@ -1730,9 +1733,13 @@ class SemanticAnalyzer(
             defn.fullname = defn.info._fullname
             if defn.info.is_named_tuple:
                 # Named tuple nested within a class is stored in the class symbol table.
-                self.add_symbol_skip_local(global_name, defn.info)
+                self.add_symbol_skip_local(global_name, node_to_add)
+                if node:
+                    self.add_symbol_skip_local(global_name + "-fallback", node_to_add)
             else:
-                self.globals[global_name] = SymbolTableNode(GDEF, defn.info)
+                self.globals[global_name] = SymbolTableNode(GDEF, node_to_add)
+                if node:
+                    self.globals[global_name + "-fallback"] = SymbolTableNode(GDEF, node_to_add)
 
     def make_empty_type_info(self, defn: ClassDef) -> TypeInfo:
         if (
@@ -1871,10 +1878,6 @@ class SemanticAnalyzer(
             self.fail("Class has two incompatible bases derived from tuple", defn)
             defn.has_incompatible_baseclass = True
         info.tuple_type = base
-        if isinstance(base_expr, CallExpr):
-            defn.analyzed = NamedTupleExpr(base.partial_fallback.type)
-            defn.analyzed.line = defn.line
-            defn.analyzed.column = defn.column
 
         if base.partial_fallback.type.fullname == "builtins.tuple":
             # Fallback can only be safely calculated after semantic analysis, since base
@@ -2661,10 +2664,8 @@ class SemanticAnalyzer(
     def analyze_namedtuple_assign(self, s: AssignmentStmt) -> bool:
         """Check if s defines a namedtuple."""
         if isinstance(s.rvalue, CallExpr) and isinstance(s.rvalue.analyzed, NamedTupleExpr):
-            if (
-                not self.options.enable_recursive_aliases
-                or s.rvalue.analyzed.info.tuple_type
-                and not has_placeholder(s.rvalue.analyzed.info.tuple_type)
+            if s.rvalue.analyzed.info.tuple_type and not has_placeholder(
+                s.rvalue.analyzed.info.tuple_type
             ):
                 return True  # This is a valid and analyzed named tuple definition, nothing to do here.
         if len(s.lvalues) != 1 or not isinstance(s.lvalues[0], (NameExpr, MemberExpr)):

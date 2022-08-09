@@ -1265,6 +1265,8 @@ class Instance(ProperType):
     def serialize(self) -> Union[JsonDict, str]:
         assert self.type is not None
         type_ref = self.type.fullname
+        if self.type.is_named_tuple:
+            type_ref += "-fallback"
         if not self.args and not self.last_known_value:
             return type_ref
         data: JsonDict = {".class": "Instance"}

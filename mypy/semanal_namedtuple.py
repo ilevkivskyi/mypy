@@ -113,13 +113,16 @@ class NamedTupleAnalyzer:
                     items, types, default_items = result
                     if is_func_scope and "@" not in defn.name:
                         defn.name += "@" + str(defn.line)
+                    if defn.analyzed:
+                        existing_info = defn.analyzed.info
+                    else:
+                        existing_info = None
                     info = self.build_namedtuple_typeinfo(
-                        defn.name, items, types, default_items, defn.line
+                        defn.name, items, types, default_items, defn.line, existing_info
                     )
+                    if existing_info:
+                        assert existing_info is info
                     defn.info = info
-                    defn.analyzed = NamedTupleExpr(info, is_typed=True)
-                    defn.analyzed.line = defn.line
-                    defn.analyzed.column = defn.column
                     # All done: this is a valid named tuple with all types known.
                     return True, info
         # This can't be a valid named tuple.
@@ -169,9 +172,7 @@ class NamedTupleAnalyzer:
                     types.append(AnyType(TypeOfAny.unannotated))
                 else:
                     analyzed = self.api.anal_type(
-                        stmt.type,
-                        allow_placeholder=self.options.enable_recursive_aliases
-                        and not self.api.is_func_scope(),
+                        stmt.type, allow_placeholder=self.options.enable_recursive_aliases
                     )
                     if analyzed is None:
                         # Something is incomplete. We need to defer this named tuple.
@@ -235,11 +236,19 @@ class NamedTupleAnalyzer:
                     name += "@" + str(call.line)
             else:
                 name = var_name = "namedtuple@" + str(call.line)
-            info = self.build_namedtuple_typeinfo(name, [], [], {}, node.line)
-            self.store_namedtuple_info(info, var_name, call, is_typed)
+            info = self.build_namedtuple_typeinfo(name, [], [], {}, node.line, None)
+            alias = TypeAlias(
+                info.tuple_type.copy_modified(fallback=Instance(info, [])),
+                info.fullname,
+                info.line,
+                info.column,
+            )
+            call.analyzed = NamedTupleExpr(info, alias, is_typed=is_typed)
+            call.analyzed.set_line(call)
+            self.store_namedtuple_info(info, var_name, call, is_typed, alias)
             if name != var_name or is_func_scope:
                 # NOTE: we skip local namespaces since they are not serialized.
-                self.api.add_symbol_skip_local(name, info)
+                self.api.add_symbol_skip_local(name, alias)
             return var_name, info
         if not ok:
             # This is a valid named tuple but some types are not ready.
@@ -271,20 +280,33 @@ class NamedTupleAnalyzer:
             }
         else:
             default_items = {}
-        info = self.build_namedtuple_typeinfo(name, items, types, default_items, node.line)
+
+        existing_info = None
+        if node.analyzed:
+            existing_info = node.analyzed.info
+        info = self.build_namedtuple_typeinfo(
+            name, items, types, default_items, node.line, existing_info
+        )
+        alias = TypeAlias(
+            info.tuple_type.copy_modified(fallback=Instance(info, [])),
+            info.fullname,
+            info.line,
+            info.column,
+        )
+        if node.analyzed:
+            existing = node.analyzed.alias
+            if has_placeholder(existing.target):
+                existing.target = alias.target
+                self.api.progress = True
+                self.api.defer()
+            # No need to store in symbol tables.
+            return typename, info
 
         # If var_name is not None (i.e. this is not a base class expression), we always
         # store the generated TypeInfo under var_name in the current scope, so that
         # other definitions can use it.
-        if self.options.enable_recursive_aliases:
-            alias = TypeAlias(
-                info.tuple_type.copy_modified(fallback=Instance(info, [])),
-                info.fullname,
-                info.line,
-                info.column,
-            )
-        else:
-            alias = None
+        call.analyzed = NamedTupleExpr(info, alias, is_typed=is_typed)
+        call.analyzed.set_line(call)
         if var_name:
             self.store_namedtuple_info(info, var_name, call, is_typed, alias)
         # There are three cases where we need to store the generated TypeInfo
@@ -301,37 +323,15 @@ class NamedTupleAnalyzer:
         #     since it is in MRO of some class).
         if name != var_name or is_func_scope:
             # NOTE: we skip local namespaces since they are not serialized.
-            if self.options.enable_recursive_aliases and not is_func_scope:
-                existing = self.api.current_symbol_table().get(name)
-                if existing and isinstance(existing.node, TypeAlias):
-                    if has_placeholder(existing.node.target):
-                        existing.node.target = node.target
-                        self.api.progress = True
-                        self.api.defer()
-                else:
-                    self.api.add_symbol_skip_local(name, alias)
-            self.api.add_symbol_skip_local(name, info)
+            self.api.add_symbol_skip_local(name, alias)
+            self.api.add_symbol_skip_local(name + "-fallback", info)
         return typename, info
 
     def store_namedtuple_info(
-        self,
-        info: TypeInfo,
-        name: str,
-        call: CallExpr,
-        is_typed: bool,
-        node: Optional[TypeAlias] = None,
+        self, info: TypeInfo, name: str, call: CallExpr, is_typed: bool, node: TypeAlias
     ) -> None:
-        call.analyzed = NamedTupleExpr(info, is_typed=is_typed)
-        if self.options.enable_recursive_aliases:
-            existing = self.api.current_symbol_table().get(name)
-            if existing and isinstance(existing.node, TypeAlias):
-                if has_placeholder(existing.node.target):
-                    existing.node.target = node.target
-                    self.api.progress = True
-                    self.api.defer()
-                return
-        self.api.add_symbol(name, node or info, call)
-        call.analyzed.set_line(call)
+        self.api.add_symbol(name, node, call)
+        self.api.add_symbol(name + "-fallback", info, call)
 
     def parse_namedtuple_args(
         self, call: CallExpr, fullname: str
@@ -450,9 +450,7 @@ class NamedTupleAnalyzer:
                     self.fail("Invalid field type", type_node)
                     return None
                 analyzed = self.api.anal_type(
-                    type,
-                    allow_placeholder=self.options.enable_recursive_aliases
-                    and not self.api.is_func_scope(),
+                    type, allow_placeholder=self.options.enable_recursive_aliases
                 )
                 # Workaround #4987 and avoid introducing a bogus UnboundType
                 if isinstance(analyzed, UnboundType):
@@ -473,6 +471,7 @@ class NamedTupleAnalyzer:
         types: List[Type],
         default_items: Mapping[str, Expression],
         line: int,
+        existing_info: Optional[TypeInfo],
     ) -> TypeInfo:
         strtype = self.api.named_type("builtins.str")
         implicit_any = AnyType(TypeOfAny.special_form)
@@ -493,7 +492,7 @@ class NamedTupleAnalyzer:
         literals: List[Type] = [LiteralType(item, strtype) for item in items]
         match_args_type = TupleType(literals, basetuple_type)
 
-        info = self.api.basic_new_typeinfo(name, fallback, line)
+        info = existing_info or self.api.basic_new_typeinfo(name, fallback, line)
         info.is_named_tuple = True
         tuple_base = TupleType(types, fallback)
         info.tuple_type = tuple_base
