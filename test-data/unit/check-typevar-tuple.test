@@ -176,6 +176,16 @@ Ts = TypeVarTuple("Ts")
 B = Ts  # E: Type variable "__main__.Ts" is invalid as target for type alias
 [builtins fixtures/tuple.pyi]
 
+[case testMultipleVariadicUnpacksInvalid]
+from typing import TypeVarTuple, Unpack, Generic
+
+Ts = TypeVarTuple("Ts")
+class A(Generic[Unpack[Ts]]): ...
+
+A[Unpack[tuple[int, ...]], Unpack[tuple[int, ...]]]  # E: More than one Unpack in a type is not allowed
+b: tuple[Unpack[tuple[int, ...]], Unpack[tuple[int, ...]]]  # E: More than one Unpack in a type is not allowed
+[builtins fixtures/tuple.pyi]
+
 [case testTypeVarTuplePep646ArrayExample]
 from typing import Generic, Tuple, TypeVar, Protocol, NewType
 from typing_extensions import TypeVarTuple, Unpack
