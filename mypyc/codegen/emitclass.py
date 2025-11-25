@@ -410,7 +410,7 @@ def setter_name(cl: ClassIR, attribute: str, names: NameGenerator) -> str:
 
 
 def generate_object_struct(cl: ClassIR, emitter: Emitter) -> None:
-    seen_attrs: set[str] = set()
+    seen_attrs: set[tuple[str, RType | None]] = set()
     lines: list[str] = []
     lines += ["typedef struct {", "PyObject_HEAD", "CPyVTableItem *vtable;"]
     if cl.has_method("__call__"):
@@ -429,9 +429,13 @@ def generate_object_struct(cl: ClassIR, emitter: Emitter) -> None:
             for attr, rtype in base.attributes.items():
                 # Generated class may redefine certain attributes with different
                 # types in subclasses (this would be unsafe for user-defined classes).
-                if attr not in seen_attrs:
+                if cl.is_generated:
+                    key: tuple[str, RType | None] = (attr, None)
+                else:
+                    key = (attr, rtype)
+                if key not in seen_attrs:
                     lines.append(f"{emitter.ctype_spaced(rtype)}{emitter.attr(attr)};")
-                    seen_attrs.add(attr)
+                    seen_attrs.add(key)
 
                     if isinstance(rtype, RTuple):
                         emitter.declare_tuple_struct(rtype)
