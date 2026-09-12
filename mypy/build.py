@@ -4997,7 +4997,10 @@ def process_stale_scc_implementation(
             continue
         # We need to reset deferral count after possibly deferring any methods that
         # are considered part of the top-level (because they define/infer variables).
-        checker.pass_num = 0
+        # Note we need to add one pass to compensate for function bodies not visited in
+        # type_check_first_pass(). So with current DEFAULT_LAST_PASS = 2 each function
+        # will be visited at most three times, for both single-phase and two-phase logic.
+        checker.pass_num = -1
         checker.deferred_nodes.clear()
         tree = graph[id].tree
         assert tree is not None
